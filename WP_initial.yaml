@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  CF Stack for Building a loadbalanced Wordpress Website
+Parameters:
+  ContinousNumber:
+    Type: String
+    MinLength: 2
+    MaxLength: 2
+    AllowedPattern: '[0-9]{1,2}'
+  Creator:
+    Type: String
+  CustomerContactMail:
+    Type: String
+  ProjectShortName:
+    Type: String
+  SecurityGroupLBIds:
+    Type: String
+  ContainerSecurityGroups:
+    Type: String
+  ApplicationName:
+    Type: String
+  CostReference:
+    Type: String
+  Environment:
+    Description: 'Choose environment'
+    Type: String
+  TicketReference:
+    Type: String
+  PubSubnets:
+    Description: PubSubnets for the ECS cluster
+    Type: String
+  PrvSubnets:
+    Description: PrvSubnets for the ECS cluster
+    Type: String
+  Image:
+    Type: String
+    Description: Insert either an official DockerHub Image, ore use a prebuild AWS ECR URL
+  MinContainers:
+    Type: Number
+    Description: Minimum amount of containers / tasks
+    Default: 1
+  MaxContainers:
+    Type: Number
+    Description: Maximum amount of containers / tasks
+    Default: 2
+  Cpu:
+    Type: String
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+  Memory:
+    Type: String
+  AutoScalingTargetValue:
+    Type: Number
+    Description: When should Autoscaling launch a new task? [CPU %]
+    Default: 75
+  ScaleInSec:
+    Type: Number
+    Default: 300
+    Description: When should Autoscaling launch a new task? [Time in Sec]
+  ScaleOutSec:
+    Type: Number
+    Default: 300
+    Description: When should Autoscaling terminate a task? [Time in Sec]
+  VpcId:
+    Type: String
+  DockerRunUser:
+    Type: String
+    Description: "Default User who is starting the Dockerimage"
+    Default: "root"
+  CertificateARNLoadbalancer:
+    Type: String
+  CertificateARNCloudFront:
+    Type: String
+  EfsID:
+    Type: String
+  DnsName:
+    Type: String
+  CachePolicyId:
+    Type: String
+  HostedZoneId:
+    Type: String
+  RedirectDNSs:
+    Type: String
+
+Resources:
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Name: !Join [ '', [ elb-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      Scheme: internet-facing
+      SecurityGroups: !Split [ ',', !Ref SecurityGroupLBIds ]
+      Subnets: !Split [ ',', !Ref PubSubnets ]
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+      Type: application
+
+  Listener80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - LoadBalancer
+      - TargetGroup80
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup80
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  TargetGroup80:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Join [ '', [ elb-tg-80-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Join [ '', [ ecs-cs-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - Cluster
+      - TaskDefinition
+      - Listener80
+    Properties:
+      ServiceName: !Join [ '', [ ecs-s-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      Cluster: !Ref Cluster
+      EnableECSManagedTags: True
+      PropagateTags: TASK_DEFINITION
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: !Ref MinContainers
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      LoadBalancers:
+        - ContainerName: !Join [ '', [ ecs-co-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+          ContainerPort: 80
+          TargetGroupArn: !Join [ '', [ !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:', !GetAtt TargetGroup80.TargetGroupFullName ] ]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Split [ ',', !Ref PrvSubnets ]
+          SecurityGroups: !Split [ ',', !Ref ContainerSecurityGroups ]
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    # Makes sure the log group is created before it is used.
+    DependsOn:
+      - LogGroup
+    Properties:
+      # Name of the task definition. Subsequent versions of the task definition are grouped together under this name.
+      Family: !Join [ '', [ ecs-td-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      # awsvpc is required for Fargate
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !Ref ExecutionRole
+      # "The Amazon Resource Name (ARN) of an AWS Identity and Access Management (IAM) role that grants containers in the task permission to call AWS APIs on your behalf."
+      TaskRoleArn: !Ref TaskRole
+      ContainerDefinitions:
+        - Name: !Join [ '', [ ecs-co-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+          Image: !Ref Image
+          #Environment:
+          #  - Name: name
+          #    Value: !Ref value
+          #Secrets:
+          #  - Name: name
+          #    ValueFrom: !Ref value
+          #User: !Ref DockerRunUser
+          # Send logs to CloudWatch Logs
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 80
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+          MountPoints:
+            - ContainerPath: "/var/www/html"
+              SourceVolume: "efs-wordpress"
+      Volumes:
+        - EFSVolumeConfiguration:
+            FilesystemId: !Ref EfsID
+            TransitEncryption: "ENABLED"
+          Name: "efs-wordpress"
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+
+  # A role needed by ECS
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join [ '', [ iam-r-ex-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  # A role for the containers
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join [ '', [ iam-r-t-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  # A role for Autoscaling
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join [ '', [ iam-r-as-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole'
+      Tags:
+        - Key: "Creator"
+          Value: !Ref Creator
+        - Key: "ApplicationName"
+          Value: !Ref ApplicationName
+        - Key: "ProjectShortName"
+          Value: !Ref ProjectShortName
+        - Key: "CostReference"
+          Value: !Ref CostReference
+        - Key: "Environment"
+          Value: !Ref Environment
+        - Key: "TicketReference"
+          Value: !Ref TicketReference
+        - Key: "PipelineManaged"
+          Value: "True"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join [ '', [ /ecs/logs-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinContainers
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join [ '/', [ service, !Ref Cluster, !GetAtt Service.Name ] ]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      # "The Amazon Resource Name (ARN) of an AWS Identity and Access Management (IAM) role that allows Application Auto Scaling to modify your scalable target."
+      RoleARN: !GetAtt AutoScalingRole.Arn
+
+  AutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Join [ '', [ aas-p-s-, !Ref ApplicationName, !Ref ProjectShortName, !Ref Environment, !Ref ContinousNumber ] ]
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: !Ref ScaleInSec
+        ScaleOutCooldown: !Ref ScaleOutSec
+        # Keep things at or lower than 50% CPU utilization, for example
+        TargetValue: !Ref AutoScalingTargetValue
